@@ -73,8 +73,8 @@ data:
   init_args:
     meta_dir: data/meta_dcase_2024
     audio_dir: /database/TAU-urban-acoustic-scenes-2022-mobile-development
-    batch_size: 256
-    num_workers: 8
+    batch_size: 64 #256
+    num_workers: 4
     pin_memory: true
     sampling_rate: 32000
     train_subset: split5
