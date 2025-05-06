@@ -13,3 +13,4 @@ neural-compressor
 dcase_util
 tensorboard
 msgpack==0.6.2
+soundfile
