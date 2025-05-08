@@ -37,7 +37,7 @@ model:
     backbone:
       class_path: model.backbones.PretrainedBEATs
       init_args:
-          pretrained: model/beats/checkpoints/BEATs_iter3_plus_AS2M.pt
+          pretrained: model/beats/checkpoints/BEATs_iter3_plus_AS20K_finetuned_on_AS2M_cpt2.pt
           num_classes: 10
     # Set to ``null`` if not applied
     data_augmentation:
@@ -65,9 +65,9 @@ data:
   class_path: data.data_module.DCASEDataModule
   init_args:
     # The path to meta files
-    meta_dir: data/meta_dcase_2024
+    meta_dir: data/meta_dcase_2025
     # The path to audio files
-    audio_dir: ../TAU-urban-acoustic-scenes-2022-mobile-development/development
+    audio_dir: /data/TAU-urban-acoustic-scenes-2022-mobile-development
     batch_size: 256
     num_workers: 4
     pin_memory: true

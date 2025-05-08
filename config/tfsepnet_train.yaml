@@ -58,7 +58,7 @@ model:
       dir_aug:
         class_path: util.DeviceImpulseResponseAugmentation
         init_args:
-          path_ir: /database/micIR
+          path_ir: /data/micIR # or /data/micIR or /database/micIR
           p: 0.4
     class_label: scene
     domain_label: device
@@ -72,9 +72,9 @@ data:
   class_path: data.data_module.DCASEDataModule
   init_args:
     meta_dir: data/meta_dcase_2025
-    audio_dir: /database/TAU-urban-acoustic-scenes-2022-mobile-development
-    batch_size: 64 #256
-    num_workers: 4
+    audio_dir: /data/TAU-urban-acoustic-scenes-2022-mobile-development
+    batch_size: 256 #256
+    num_workers: 12
     pin_memory: true
     sampling_rate: 32000
     train_subset: split5

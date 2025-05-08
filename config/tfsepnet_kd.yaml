@@ -58,7 +58,7 @@ model:
       dir_aug:
         class_path: util.DeviceImpulseResponseAugmentation
         init_args:
-          path_ir: ../microphone_impulse_response
+          path_ir: /data/micIR
           p: 0.4
     class_label: scene
     domain_label: device
@@ -75,9 +75,9 @@ data:
   # Wrapped data module of train, valid, test DataLoaders
   class_path: data.data_module.DCASEDataModule
   init_args:
-    meta_dir: data/meta_dcase_2024
-    audio_dir: ../TAU-urban-acoustic-scenes-2022-mobile-development/development
-    batch_size: 256
+    meta_dir: data/meta_dcase_2025
+    audio_dir: /data/TAU-urban-acoustic-scenes-2022-mobile-development
+    batch_size: 16
     num_workers: 8
     pin_memory: true
     sampling_rate: 32000
