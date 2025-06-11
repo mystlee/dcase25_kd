@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from model.beats.BEATs import BEATsConfig, BEATs
 from model.classifiers import SingleLinearClassifier, ConvClassifier
-from model.shared import ConvBnRelu, ResNorm, AdaResNorm, BroadcastBlock, TimeFreqSepConvolutions
+from model.shared import ConvBnRelu, ResNorm, AdaResNorm, BroadcastBlock, TimeFreqSepConvolutions, DeviceFilter
 
 class _BaseBackbone(nn.Module):
     """ Base Module for backbones. """
@@ -209,3 +209,15 @@ class PretrainedBEATs(_BaseBackbone):
     def forward(self, x):
         x = self.encoder.extract_features(x)[0]
         return self.classifier(x)
+
+class TFSepNetWithDevice(TFSepNet):
+    def __init__(self, device_list, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.device_filter = DeviceFilter(device_list, input_channels = 1)
+
+    def forward(self, x, device_name=None):
+        x = self.device_filter(x, device_name)
+        x = self.conv_layers(x)
+        x = self.middle_layers(x)
+        x = self.classifier(x)
+        return x

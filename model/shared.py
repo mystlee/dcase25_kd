@@ -1,6 +1,7 @@
 from typing import Union, Tuple
 from torch import nn
 import torch
+import torch.nn.functional as F
 
 
 class ConvBnRelu(nn.Module):
@@ -185,3 +186,40 @@ class TimeFreqSepConvolutions(nn.Module):
         # Concat x1 and x2
         x = torch.cat((x1, x2), dim=1)
         return x
+
+
+class DeviceFilter(nn.Module):
+    def __init__(self, device_list = ["a", "b", "c", "s1", "s2", "s3", "s4", "s5", "s6"], 
+                       embed_dim = 64,
+                       input_channels = 1,
+                       default_device = "unknown"):
+        super(DeviceFilter, self).__init__()
+        self.device_to_idx = {name: i for i, name in enumerate(device_list)}
+        self.num_devices = len(device_list)
+        self.default_device_idx = self.device_to_idx.get(default_device, 0)
+
+        self.embedding = nn.Embedding(self.num_devices, embed_dim)
+
+        self.attention = nn.Sequential(nn.Linear(embed_dim, embed_dim),
+                                       nn.ReLU(inplace = True),
+                                       nn.Linear(embed_dim, input_channels),
+                                       nn.Sigmoid()
+        )
+
+    def forward(self, x, device_name=None):
+        B, C, T, F = x.shape
+
+        if device_name is None:
+            device_idx = torch.full((B,), self.default_device_idx, dtype=torch.long, device=x.device)
+        else:
+            device_idx = [self.device_to_idx.get(name, self.default_device_idx) for name in device_name]
+            device_idx = torch.tensor(device_idx, dtype=torch.long, device=x.device)
+
+        # (B, embed_dim)
+        embed_vec = self.embedding(device_idx)
+
+        # (B, C) → attention weights per channel
+        attn_weights = self.attention(embed_vec)  # (B, C)
+        attn_weights = attn_weights.view(B, C, 1, 1)  # reshape
+
+        return x * attn_weights

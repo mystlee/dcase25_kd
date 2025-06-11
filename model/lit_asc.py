@@ -7,6 +7,7 @@ from lightning.pytorch.cli import OptimizerCallable, LRSchedulerCallable
 from model.backbones import _BaseBackbone
 from util.lr_scheduler import exp_warmup_linear_down
 from util import _SpecExtractor, ClassificationSummary, _DataAugmentation
+from model.shared import DeviceFilter
 
 
 class LitAcousticSceneClassificationSystem(L.LightningModule):
@@ -28,7 +29,9 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
                  data_augmentation: Dict[str, Optional[_DataAugmentation]],
                  class_label: str = "scene",
                  domain_label: str = "device",
-                 spec_extractor: _SpecExtractor = None):
+                 spec_extractor: _SpecExtractor = None,
+                 device_list: list[str] = None,
+                 device_unknown_prob: float = 0.1):
         super(LitAcousticSceneClassificationSystem, self).__init__()
         # Save the hyperparameters for Tensorboard visualization, 'backbone' and 'spec_extractor' are excluded.
         self.save_hyperparameters(ignore=['backbone', 'spec_extractor'])
@@ -38,17 +41,33 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         self.domain_label = domain_label
         self.cla_summary = ClassificationSummary(class_label, domain_label)
         self.spec_extractor = spec_extractor
+        if device_list is not None:
+            self.device_filter = DeviceFilter(device_list, input_channels = 1)
+        else:
+            self.device_filter = None
 
         # Save data during testing for statistical analysis
         self._test_step_outputs = {'emb': [], 'y': [], 'pred': [], 'd': []}
         # Input size of a 4D sample (1, 1, F, T), used for generating model profile.
         self._test_input_size = None
+        self.device_unknown_prob = device_unknown_prob
 
     @staticmethod
     def accuracy(logits, labels):
         pred = torch.argmax(logits, dim=1)
         acc = torch.sum(pred == labels).item() / len(labels)
         return acc, pred
+
+    def apply_device_filter(self, x, device_names: list[str]):
+        if self.device_filter is None:
+            return x
+
+        if self.training and self.device_unknown_prob > 0:
+            device_names = [
+                name if torch.rand(1).item() > self.device_unknown_prob else "unknown"
+                for name in device_names
+            ]
+        return self.device_filter(x, device_names)
 
     def forward(self, x):
         return self.backbone(x)
@@ -70,10 +89,13 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         # Extract spectrogram from waveform
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
         # Apply other augmentations on spectrogram
+        x = self.apply_device_filter(x, labels['device'])
+
         x = mix_style(x) if mix_style is not None else x
         x = spec_aug(x) if spec_aug is not None else x
         if mix_up is not None:
             x, y = mix_up(x, y)
+        
         # Get the predicted labels
         y_hat = self(x)
         # Calculate the loss and accuracy
@@ -96,6 +118,8 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         labels = {'scene': batch[1], 'device': batch[2], 'city': batch[3]}
         y = labels[self.class_label]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
+        x = self.apply_device_filter(x, labels['device'])
+
         y_hat = self(x)
         val_loss = F.cross_entropy(y_hat, y)
         val_acc, _ = self.accuracy(y_hat, y)
@@ -268,3 +292,4 @@ class LitAscWithThreeSchedulers(LitAcousticSceneClassificationSystem):
         scheduler3 = self.scheduler3(optimizer)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [scheduler1, scheduler2, scheduler3], self.milestones)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
+
