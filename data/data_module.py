@@ -6,7 +6,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from util import unique_labels
-
+import os
 
 class AudioDataset(Dataset):
     """
@@ -37,6 +37,29 @@ class AudioDataset(Dataset):
         wav, _ = librosa.load(f"{self.audio_dir}/{filename}", sr=self.sr)
         wav = torch.from_numpy(wav)
         return wav, filename
+
+class AudioDatasetCached(Dataset):
+    def __init__(self, meta_dir: str, audio_dir: str, subset: str, sampling_rate: int = 16000):
+        self.meta_dir = meta_dir
+        self.audio_dir = audio_dir
+        self.subset = subset
+        self.sr = sampling_rate
+        self.meta_subset = pd.read_csv(f"{self.meta_dir}/{self.subset}.csv", sep='\t')
+
+        self.data = []
+        for idx, row in self.meta_subset.iterrows():
+            filename = row["filename"]
+            filepath = os.path.join(self.audio_dir, filename)
+            wav, _ = librosa.load(filepath, sr=self.sr)
+            wav_tensor = torch.from_numpy(wav)
+            self.data.append((wav_tensor, filename))
+        print(f"[INFO] Cached {len(self.data)} items into memory.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        return self.data[i]
 
 
 class AudioLabelsDataset(AudioDataset):
@@ -69,6 +92,42 @@ class AudioLabelsDataset(AudioDataset):
         city_label = torch.from_numpy(np.array(city_label, dtype=np.int64))
         return wav, scene_label, device_label, city_label
 
+class AudioLabelsDatasetCached(Dataset):
+    """
+    Cached dataset: audio waveform, scene label, device label and city label.
+    """
+    def __init__(self, meta_dir: str, audio_dir: str, subset: str, sampling_rate: int = 16000):
+        self.meta_dir = meta_dir
+        self.audio_dir = audio_dir
+        self.subset = subset
+        self.sr = sampling_rate
+
+        self.meta_subset = pd.read_csv(f"{self.meta_dir}/{self.subset}.csv", sep='\t')
+
+        self.data = []
+        for _, row in self.meta_subset.iterrows():
+            filename = row["filename"]
+            filepath = os.path.join(self.audio_dir, filename)
+            wav, _ = librosa.load(filepath, sr=self.sr)
+            wav_tensor = torch.from_numpy(wav)
+
+            scene_label_str = filename.split('/')[-1].split('-')[0]
+            device_label_str = filename.split('-')[-1].split('.')[0]
+            city_label_str = filename.split('-')[1]
+
+            scene_label = torch.tensor(unique_labels['scene'].index(scene_label_str), dtype=torch.long)
+            device_label = torch.tensor(unique_labels['device'].index(device_label_str), dtype=torch.long)
+            city_label = torch.tensor(unique_labels['city'].index(city_label_str), dtype=torch.long)
+
+            self.data.append((wav_tensor, scene_label, device_label, city_label))
+        print(f"[INFO] Cached {len(self.data)} items into memory.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        return self.data[i]
+
 
 class AudioLabelsDatasetWithLogits(AudioLabelsDataset):
     """
@@ -91,6 +150,58 @@ class AudioLabelsDatasetWithLogits(AudioLabelsDataset):
     def __getitem__(self, i):
         wav, scene_label, device_label, city_label = super().__getitem__(i)
         return wav, scene_label, device_label, city_label, self.teacher_logit[i]
+
+class AudioLabelsDatasetWithLogitsCached(Dataset):
+    """
+    Cached dataset with teacher logits for knowledge distillation.
+    Loads all audio, labels, and logits into memory during initialization.
+
+    Args:
+        logits_files (list): List of paths to teacher logits .pt files.
+        meta_dir (str): Directory of meta files.
+        audio_dir (str): Directory of audio files.
+        subset (str): Dataset split (e.g., train, valid).
+        sampling_rate (int): Audio sampling rate.
+    """
+    def __init__(self, logits_files: list, meta_dir: str, audio_dir: str, subset: str, sampling_rate: int = 16000):
+        self.meta_dir = meta_dir
+        self.audio_dir = audio_dir
+        self.subset = subset
+        self.sr = sampling_rate
+
+        # Load meta
+        self.meta_subset = pd.read_csv(f"{self.meta_dir}/{self.subset}.csv", sep='\t')
+
+        # Load and average logits
+        logits_all = [torch.load(f).float() for f in logits_files]
+        self.teacher_logit = sum(logits_all) / len(logits_all)
+
+        # Preload data
+        self.data = []
+        for i, row in self.meta_subset.iterrows():
+            filename = row["filename"]
+            filepath = os.path.join(self.audio_dir, filename)
+            wav, _ = librosa.load(filepath, sr=self.sr)
+            wav_tensor = torch.from_numpy(wav)
+
+            # Label parsing
+            scene_str = filename.split('/')[-1].split('-')[0]
+            device_str = filename.split('-')[-1].split('.')[0]
+            city_str = filename.split('-')[1]
+
+            scene_label = torch.tensor(unique_labels['scene'].index(scene_str), dtype=torch.long)
+            device_label = torch.tensor(unique_labels['device'].index(device_str), dtype=torch.long)
+            city_label = torch.tensor(unique_labels['city'].index(city_str), dtype=torch.long)
+
+            self.data.append((wav_tensor, scene_label, device_label, city_label, self.teacher_logit[i]))
+        print(f"[INFO] Cached {len(self.data)} items into memory with logits.")
+        
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        return self.data[i]
+
 
 
 class DCASEDataModule(L.LightningDataModule):
@@ -137,6 +248,68 @@ class DCASEDataModule(L.LightningDataModule):
             self.test_set = AudioLabelsDataset(self.meta_dir, self.audio_dir, subset=self.test_subset, **self.kwargs)
         if stage == "predict":
             self.predict_set = AudioDataset(self.meta_dir, self.audio_dir, subset=self.predict_subset, **self.kwargs)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_set, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True,
+                          pin_memory=self.pin_memory)
+
+    def val_dataloader(self):
+        return DataLoader(self.valid_set, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False,
+                          pin_memory=self.pin_memory)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False,
+                          pin_memory=self.pin_memory)
+
+    def predict_dataloader(self):
+        return DataLoader(self.predict_set, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False,
+                          pin_memory=self.pin_memory)
+
+
+class DCASEDataModuleCached(L.LightningDataModule):
+    """
+    DCASE DataModule wrapping train, validation, test and predict DataLoaders.
+
+    Args:
+        meta_dir (str): Directory of meta files, which should include meta files in csv formate.
+        audio_dir (str): Directory of audios.
+        batch_size (int): Batch size.
+        num_workers (int): Number of workers to use for DataLoaders. Will save time for loading data to GPU but increase CPU usage.
+        pin_memory (bool): If True, the data loader will copy Tensors into device/CUDA pinned memory before returning them. Will save time for data loading.
+        logits_files (list): List of directories of teacher logits, e.g. ["path/to/logit/predictions.pt", ...]. If not ``None``, knowledge distillation will be applied.
+        train_subset (str): Name of train meta file. e.g. train, split5, split10...
+        test_subset (str): Name of test meta file.
+        predict_subset (str): Name of predict meta file.
+    """
+    def __init__(self, meta_dir: str, audio_dir: str, batch_size: int = 16, num_workers: int = 0, pin_memory: bool=False,
+                 logits_files=None, train_subset="train", test_subset="test", predict_subset="test", **kwargs):
+        super().__init__()
+        self.meta_dir = meta_dir
+        self.audio_dir = audio_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.train_subset = train_subset
+        self.test_subset = test_subset
+        self.predict_subset = predict_subset
+        self.logits_files = logits_files
+        self.kwargs = kwargs
+
+    def setup(self, stage: str):
+        # Assign train/val datasets for use in dataloaders
+        if stage == "fit":
+            # Add teacher logits to the dataset if using knowledge distillation
+            if self.logits_files is not None:
+                self.train_set = AudioLabelsDatasetWithLogitsCached(logits_files=self.logits_files, meta_dir=self.meta_dir, audio_dir=self.audio_dir, subset=self.train_subset, **self.kwargs)
+            else:
+                self.train_set = AudioLabelsDatasetCached(self.meta_dir, self.audio_dir, subset=self.train_subset, **self.kwargs)
+            self.valid_set = AudioLabelsDatasetCached(self.meta_dir, self.audio_dir, subset="valid", **self.kwargs)
+        if stage == "validate":
+            self.valid_set = AudioLabelsDatasetCached(self.meta_dir, self.audio_dir, subset="valid", **self.kwargs)
+        if stage == "test":
+            self.test_set = AudioLabelsDatasetCached(self.meta_dir, self.audio_dir, subset=self.test_subset, **self.kwargs)
+        if stage == "predict":
+            self.predict_set = AudioDatasetCached(self.meta_dir, self.audio_dir, subset=self.predict_subset, **self.kwargs)
 
     def train_dataloader(self):
         return DataLoader(self.train_set, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True,
