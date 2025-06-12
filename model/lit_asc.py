@@ -80,23 +80,32 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         # Choose class label
         y = labels[self.class_label]
         # Instantiate data augmentations
-        dir_aug = self.data_aug['dir_aug']
-        mix_style = self.data_aug['mix_style']
-        spec_aug = self.data_aug['spec_aug']
-        mix_up = self.data_aug['mix_up']
-        # Apply dir augmentation on waveform
-        x = dir_aug(x, labels['device']) if dir_aug is not None else x
-        # Extract spectrogram from waveform
-        x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
-        # Apply other augmentations on spectrogram
-        x = self.apply_device_filter(x, labels['device'])
+        dir_aug = self.data_aug.get('dir_aug', None) # self.data_aug['dir_aug']
+        mix_style = self.data_aug.get('mix_style', None)
+        spec_aug = self.data_aug.get('spec_aug', None)
+        mix_up = self.data_aug.get('mix_up', None)
+
+        filt_aug = self.data_aug.get('filt_aug', None)
+        noise_aug = self.data_aug.get('add_noise', None)
+        freq_mask_aug = self.data_aug.get('freq_mask', None)
+        time_mask_aug = self.data_aug.get('time_mask', None)
+        frame_shift_aug = self.data_aug.get('frame_shift', None)
+
+        x = dir_aug(x, labels['device']) if dir_aug is not None else x # Apply dir augmentation on waveform
+        x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1) # Extract spectrogram from waveform
+        x = self.apply_device_filter(x, labels['device']) # Apply other augmentations on spectrogram
 
         x = mix_style(x) if mix_style is not None else x
         x = spec_aug(x) if spec_aug is not None else x
         if mix_up is not None:
             x, y = mix_up(x, y)
         
-        # Get the predicted labels
+        x = filt_aug(x) if filt_aug is not None else x
+        x = noise_aug(x) if noise_aug is not None else x
+        x = freq_mask_aug(x) if freq_mask_aug is not None else x
+        x = time_mask_aug(x) if time_mask_aug is not None else x
+        x = frame_shift_aug(x) if frame_shift_aug is not None else x
+
         y_hat = self(x)
         # Calculate the loss and accuracy
         if mix_up is not None:

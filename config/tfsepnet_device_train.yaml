@@ -2,33 +2,21 @@
 
 trainer:
   logger:
-      # Logger to save the logs, configs, hyperparameters and checkpoints
       class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
-        # Save path
         save_dir: log
-        # Sub-path of the save path
         name: tfsepnet_train
   callbacks:
-      # Show epoch instead of step on tensor board
     - class_path: util.OverrideEpochStepCallback
-      # Monitor learning rate on tensor board
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
-#      # Stop training if `monitor` metric stop decreasing for `patience` epochs
-#    - class_path: lightning.pytorch.callbacks.EarlyStopping
-#      init_args:
-#        monitor: val_loss
-#        patience: 100
-      # Save the best model with highest validation accuracy
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         save_top_k: 1
         monitor: val_acc
         mode: max
         filename: '{epoch}-{val_acc:.4f}'
-  # Max training epochs
   max_epochs: 150
 
 ckpt_path: null
@@ -55,10 +43,37 @@ model:
           alpha: 0.4
           p: 0.8
       spec_aug: null
+      # spec_aug:
+      #   class_path: util.SpecAugmentation
+      #   init_args:
+      #     mask_size: 0.2
+      #     p: 1.0
+      filt_aug:
+        class_path: util.FilterAugmentation
+        init_args:
+          filter_type: "step"
+          db_range: [-4, 4]
+      add_noise:
+        class_path: util.AdditiveNoiseAugmentation
+        init_args:
+          snrs: [10, 20]
+      freq_mask:
+        class_path: util.FrequencyMaskAugmentation
+        init_args:
+          mask_ratio: 16
+      time_mask:
+        class_path: util.TimeMaskAugmentation
+        init_args:
+          mask_ratios: [10, 20]
+          net_pooling: 2
+      frame_shift:
+        class_path: util.FrameShiftAugmentation
+        init_args:
+          net_pooling: 2
       dir_aug:
         class_path: util.DeviceImpulseResponseAugmentation
         init_args:
-          path_ir: /database/micIR/ # or /data/micIR or /database/micIR
+          path_ir: /database/micIR/
           p: 0.4
     class_label: scene
     domain_label: device
@@ -79,6 +94,7 @@ data:
     pin_memory: true
     sampling_rate: 32000
     train_subset: split25
+    test_subset: test
 
 optimizer:
   class_path: torch.optim.Adam
