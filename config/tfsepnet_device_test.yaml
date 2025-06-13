@@ -12,7 +12,7 @@ trainer:
         name: tfsepnet_test
 
 # Path to the checkpoint of trained TF-SepNet
-ckpt_path: log/tfsepnet_train/version_6/checkpoints/epoch=28-val_acc=0.5442.ckpt
+ckpt_path: log/tfsepnet_train/version_12/checkpoints/epoch=139-val_acc=0.5683.ckpt
 
 model:
   class_path: model.lit_asc.LitAcousticSceneClassificationSystem

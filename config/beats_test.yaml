@@ -3,12 +3,9 @@
 
 trainer:
   logger:
-      # Logger to save the logs, configs, hyperparameters and checkpoints
       class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
-        # Save path
         save_dir: log
-        # Sub-path of the save path
         name: beats_test
 
 # Path to the checkpoint of fine-tuned BEATs

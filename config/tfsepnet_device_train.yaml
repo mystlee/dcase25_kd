@@ -85,7 +85,7 @@ model:
     device_unknown_prob: 0.1  
 data:
   # Wrapped data module of train, valid, test DataLoaders
-  class_path: data.data_module.DCASEDataModule
+  class_path: data.data_module.DCASEDataModuleCached
   init_args:
     meta_dir: data/meta_dcase_2025
     audio_dir: /database/dcase/task1/TAU-urban-acoustic-scenes-2022-mobile-development/

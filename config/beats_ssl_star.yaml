@@ -2,23 +2,17 @@
 
 trainer:
   logger:
-      # Logger to save the logs, configs, hyperparameters and checkpoints
       class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
-        # Save path
         save_dir: log
-        # Sub-path of the save path
         name: beats_ssl_star
   callbacks:
-      # Show epoch instead of step on tensor board
     - class_path: util.OverrideEpochStepCallback
       # Freeze encoder
     - class_path: util.FreezeEncoderFinetuneClassifier
-      # Monitor learning rate on tensor board
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
-      # Save the best model with highest validation accuracy
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         save_top_k: 1
@@ -26,7 +20,6 @@ trainer:
         mode: max
         filename: '{epoch}-{val_acc:.4f}'
         save_weights_only: True
-  # Max training epochs
   max_epochs: 60
 
 ckpt_path: null
