@@ -43,8 +43,12 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         self.spec_extractor = spec_extractor
         if device_list is not None:
             self.device_filter = DeviceFilter(device_list, input_channels = 1)
+            print(f"Device filter is applied with device list: {device_list}")
         else:
             self.device_filter = None
+            print("Device filter is not applied, no device list is provided.")
+        
+        self.register_module("device_filter", self.device_filter)
 
         # Save data during testing for statistical analysis
         self._test_step_outputs = {'emb': [], 'y': [], 'pred': [], 'd': []}
@@ -92,9 +96,9 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         frame_shift_aug = self.data_aug.get('frame_shift', None)
 
         x = dir_aug(x, labels['device']) if dir_aug is not None else x # Apply dir augmentation on waveform
-        x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1) # Extract spectrogram from waveform
-        x = self.apply_device_filter(x, labels['device']) # Apply other augmentations on spectrogram
-
+        x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
+        # x = self.apply_device_filter(x, labels['device'])
+        
         x = mix_style(x) if mix_style is not None else x
         x = spec_aug(x) if spec_aug is not None else x
         if mix_up is not None:
@@ -105,6 +109,8 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         x = freq_mask_aug(x) if freq_mask_aug is not None else x
         x = time_mask_aug(x) if time_mask_aug is not None else x
         x = frame_shift_aug(x) if frame_shift_aug is not None else x
+
+        x = self.apply_device_filter(x, labels['device'])
 
         y_hat = self(x)
         # Calculate the loss and accuracy
@@ -118,6 +124,20 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         else:
             train_loss = F.cross_entropy(y_hat, y)
             train_acc, _ = self.accuracy(y_hat, y)
+        if batch_idx == 0:
+            all_devices = self.device_filter.device_to_idx.keys() 
+            device_ids_tensor = torch.tensor(
+                [self.device_filter.device_to_idx[d] for d in all_devices],
+                device=x.device
+            )
+            with torch.no_grad():
+                embeddings = self.device_filter.embedding(device_ids_tensor)
+                attn_values = self.device_filter.attention(embeddings)  # shape: (D, C)
+                for i, dev in enumerate(all_devices):
+                    self.logger.experiment.add_histogram(f'attn/{dev}', attn_values[i], global_step=self.global_step)
+
+
+        
         # Log for each epoch
         self.log_dict({'train_loss': train_loss, 'train_acc': train_acc}, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return train_loss
@@ -141,6 +161,8 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         y = labels[self.class_label]
         d = labels[self.domain_label]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
+        # x = self.apply_device_filter(x, labels['device'])
+        x = self.apply_device_filter(x, torch.full((x.size(0),), 9, device=x.device))
         # Get the input size of feature for measuring model profile
         self._test_input_size = (1, 1, x.size(-2), x.size(-1))
         y_hat = self(x)
@@ -179,6 +201,14 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         x = batch[0]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
         return self(x)
+
+    # def on_train_start(self):
+    #     if self.device_filter is not None:
+    #         check_optimizer_inclusion(self, self.trainer.optimizers[0])
+
+    # def on_after_backward(self):
+    #     if self.device_filter is not None:
+    #         check_device_filter_gradients(self)
 
 
 class LitAscWithKnowledgeDistillation(LitAcousticSceneClassificationSystem):
@@ -302,3 +332,26 @@ class LitAscWithThreeSchedulers(LitAcousticSceneClassificationSystem):
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [scheduler1, scheduler2, scheduler3], self.milestones)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
+
+def check_optimizer_inclusion(model, optimizer):
+    print("🔍 [Optimizer 포함 여부 체크]")
+    filter_params = list(model.device_filter.parameters())
+    all_optim_params = []
+    for group in optimizer.param_groups:
+        all_optim_params += group['params']
+
+    overlap = any(id(p) in [id(fp) for fp in filter_params] for p in all_optim_params)
+    if overlap:
+        print("✅ DeviceFilter가 optimizer에 포함되어 있습니다.")
+    else:
+        print("❌ DeviceFilter가 optimizer에 포함되지 않았습니다.")
+
+def check_device_filter_gradients(model):
+    print("🔍 [DeviceFilter Gradient 흐름 체크]")
+    for name, param in model.device_filter.named_parameters():
+        if param.grad is None:
+            print(f"❌ {name}: gradient 없음 (None)")
+        elif param.grad.abs().sum().item() == 0:
+            print(f"⚠️ {name}: gradient 존재하지만 모두 0")
+        else:
+            print(f"✅ {name}: gradient 평균 = {param.grad.abs().mean().item():.6f}")
