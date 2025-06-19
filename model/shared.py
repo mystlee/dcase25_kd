@@ -3,7 +3,6 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 
-
 class ConvBnRelu(nn.Module):
     """
     Standard convolution block with Batch normalization and Relu activation.
@@ -212,8 +211,12 @@ class DeviceFilter(nn.Module):
         if device_name is None:
             device_idx = torch.full((B,), self.default_device_idx, dtype=torch.long, device=x.device)
         else:
-            device_idx = [self.device_to_idx.get(name, self.default_device_idx) for name in device_name]
-            device_idx = torch.tensor(device_idx, dtype=torch.long, device=x.device)
+            # print(f"Device names: {device_name}")
+            # device_idx = [self.device_to_idx.get(name, self.default_device_idx) for name in device_name]
+            # print(f"Device indices: {device_idx}")
+            # device_idx = [self.device_to_idx.get(device_name, self.default_device_idx)]
+            device_idx = torch.tensor(device_name, dtype=torch.long, device=x.device)
+            # print(f"Device indices: {device_idx}")
 
         # (B, embed_dim)
         embed_vec = self.embedding(device_idx)

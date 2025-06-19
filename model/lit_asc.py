@@ -8,7 +8,12 @@ from model.backbones import _BaseBackbone
 from util.lr_scheduler import exp_warmup_linear_down
 from util import _SpecExtractor, ClassificationSummary, _DataAugmentation
 from model.shared import DeviceFilter
+import numpy as np
 
+import matplotlib.pyplot as plt
+import io
+import seaborn as sns
+from PIL import Image
 
 class LitAcousticSceneClassificationSystem(L.LightningModule):
     """
@@ -41,6 +46,7 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         self.domain_label = domain_label
         self.cla_summary = ClassificationSummary(class_label, domain_label)
         self.spec_extractor = spec_extractor
+        self.device_list = device_list
         if device_list is not None:
             self.device_filter = DeviceFilter(device_list, input_channels = 1)
             print(f"Device filter is applied with device list: {device_list}")
@@ -52,6 +58,7 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
 
         # Save data during testing for statistical analysis
         self._test_step_outputs = {'emb': [], 'y': [], 'pred': [], 'd': []}
+        self._val_outputs = {'y': [], 'pred': [], 'loss': [], 'device': []}
         # Input size of a 4D sample (1, 1, F, T), used for generating model profile.
         self._test_input_size = None
         self.device_unknown_prob = device_unknown_prob
@@ -62,13 +69,13 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         acc = torch.sum(pred == labels).item() / len(labels)
         return acc, pred
 
-    def apply_device_filter(self, x, device_names: list[str]):
+    def apply_device_filter(self, x, device_names: list):
         if self.device_filter is None:
             return x
 
         if self.training and self.device_unknown_prob > 0:
             device_names = [
-                name if torch.rand(1).item() > self.device_unknown_prob else "unknown"
+                name if torch.rand(1).item() > self.device_unknown_prob else self.device_filter.default_device_idx
                 for name in device_names
             ]
         return self.device_filter(x, device_names)
@@ -111,7 +118,6 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         x = frame_shift_aug(x) if frame_shift_aug is not None else x
 
         x = self.apply_device_filter(x, labels['device'])
-
         y_hat = self(x)
         # Calculate the loss and accuracy
         if mix_up is not None:
@@ -136,8 +142,6 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
                 for i, dev in enumerate(all_devices):
                     self.logger.experiment.add_histogram(f'attn/{dev}', attn_values[i], global_step=self.global_step)
 
-
-        
         # Log for each epoch
         self.log_dict({'train_loss': train_loss, 'train_acc': train_acc}, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return train_loss
@@ -146,13 +150,20 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         x = batch[0]
         labels = {'scene': batch[1], 'device': batch[2], 'city': batch[3]}
         y = labels[self.class_label]
+        d = labels[self.domain_label]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
         x = self.apply_device_filter(x, labels['device'])
 
         y_hat = self(x)
-        val_loss = F.cross_entropy(y_hat, y)
-        val_acc, _ = self.accuracy(y_hat, y)
-        self.log_dict({'val_loss': val_loss, 'val_acc': val_acc}, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        val_loss = F.cross_entropy(y_hat, y, reduction = 'none')  # (B,)
+        val_acc, pred = self.accuracy(y_hat, y)
+        self.log_dict({'val_loss': val_loss.mean(), 'val_acc': val_acc}, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+        self._val_outputs['y'] += y.cpu().tolist()
+        self._val_outputs['pred'] += pred.cpu().tolist()
+        self._val_outputs['loss'] += val_loss.detach().cpu().tolist()
+        self._val_outputs['device'] += d.cpu().tolist()
+
         return val_acc
 
     def test_step(self, batch, batch_idx):
@@ -161,8 +172,9 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         y = labels[self.class_label]
         d = labels[self.domain_label]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
-        # x = self.apply_device_filter(x, labels['device'])
-        x = self.apply_device_filter(x, torch.full((x.size(0),), 9, device=x.device))
+        x = self.apply_device_filter(x, labels['device'])
+        # x = self.apply_device_filter(x, None) 
+        
         # Get the input size of feature for measuring model profile
         self._test_input_size = (1, 1, x.size(-2), x.size(-1))
         y_hat = self(x)
@@ -202,6 +214,77 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
         return self(x)
 
+    def on_validation_epoch_end(self):
+        from collections import defaultdict
+        outputs = self._val_outputs
+        y, pred, loss, device = map(np.array, [outputs['y'], outputs['pred'], outputs['loss'], outputs['device']])
+        
+        # print("\nDevice Specific")
+        self._log_per_device_and_class(y, pred, loss, device, prefix='val_normal')
+
+        # print("\nDevice='unknown' (general)")
+
+        self.eval()
+        all_y, all_pred, all_loss, all_device = [], [], [], []
+        dataloader = self.trainer.datamodule.val_dataloader()
+        for batch in dataloader:
+            x = batch[0].to(self.device)
+            labels = {'scene': batch[1].to(self.device),
+                      'device': batch[2].to(self.device),
+                      'city': batch[3].to(self.device)}
+            y = labels[self.class_label]
+
+            x = self.spec_extractor(x).unsqueeze(1)
+            x = self.apply_device_filter(x, [self.device_filter.default_device_idx] * x.size(0))
+            y_hat = self(x)
+            loss = F.cross_entropy(y_hat, y, reduction='none')
+            pred = torch.argmax(y_hat, dim=1)
+
+            all_y += y.cpu().tolist()
+            all_pred += pred.cpu().tolist()
+            all_loss += loss.cpu().tolist()
+            all_device += labels[self.domain_label].cpu().tolist()
+
+        self._log_per_device_and_class(np.array(all_y), np.array(all_pred), np.array(all_loss), np.array(all_device), prefix='val_unknown')
+        self._val_outputs = {'y': [], 'pred': [], 'loss': [], 'device': []}
+
+
+    def _log_per_device_and_class(self, y, pred, loss, device, prefix="val"):
+        from collections import defaultdict
+        # print(f"{prefix.upper()} - Device-wise Accuracy / Log Loss:")
+        
+        NUM_CLASSES = int(np.max(y)) + 1  
+        ALL_CLASSES = list(range(NUM_CLASSES))
+
+        device_stats = defaultdict(list)
+        class_stats = defaultdict(list)
+        for i in range(len(y)):
+            device_stats[device[i]].append(i)
+            class_stats[y[i]].append(i)
+
+        if self.device_list is not None:
+            for dev in sorted(self.device_list):
+                idxs = device_stats.get(dev, [])
+                if idxs:
+                    acc = np.mean(y[idxs] == pred[idxs])
+                    log_loss = np.mean(loss[idxs])
+                else:
+                    acc = 0.0
+                    log_loss = 0.0
+                self.logger.experiment.add_scalar(f'{prefix}_acc_per_device/{dev}', acc, self.current_epoch)
+                self.logger.experiment.add_scalar(f'{prefix}_loss_per_device/{dev}', log_loss, self.current_epoch)
+
+        for cls in sorted(ALL_CLASSES):
+            idxs = class_stats.get(cls, [])
+            if idxs:
+                acc = np.mean(y[idxs] == pred[idxs])
+                log_loss = np.mean(loss[idxs])
+            else:
+                acc = 0.0
+                log_loss = 0.0
+            self.logger.experiment.add_scalar(f'{prefix}_acc_per_class/{cls}', acc, self.current_epoch)
+            self.logger.experiment.add_scalar(f'{prefix}_loss_per_class/{cls}', log_loss, self.current_epoch)
+
     # def on_train_start(self):
     #     if self.device_filter is not None:
     #         check_optimizer_inclusion(self, self.trainer.optimizers[0])
@@ -237,20 +320,33 @@ class LitAscWithKnowledgeDistillation(LitAcousticSceneClassificationSystem):
         y_soft = F.log_softmax(teacher_logits / self.temperature, dim=-1)
         # Load hard labels
         y = labels[self.class_label]
-        # Instantiate data augmentations
-        dir_aug = self.data_aug['dir_aug']
-        mix_style = self.data_aug['mix_style']
-        spec_aug = self.data_aug['spec_aug']
-        mix_up = self.data_aug['mix_up']
-        # Apply dir augmentation on waveform
-        x = dir_aug(x, labels['device']) if dir_aug is not None else x
-        # Extract spectrogram from waveform
+        
+        dir_aug = self.data_aug.get('dir_aug', None) # self.data_aug['dir_aug']
+        mix_style = self.data_aug.get('mix_style', None)
+        spec_aug = self.data_aug.get('spec_aug', None)
+        mix_up = self.data_aug.get('mix_up', None)
+
+        filt_aug = self.data_aug.get('filt_aug', None)
+        noise_aug = self.data_aug.get('add_noise', None)
+        freq_mask_aug = self.data_aug.get('freq_mask', None)
+        time_mask_aug = self.data_aug.get('time_mask', None)
+        frame_shift_aug = self.data_aug.get('frame_shift', None)
+
+        x = dir_aug(x, labels['device']) if dir_aug is not None else x # Apply dir augmentation on waveform
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
-        # Apply other augmentations on spectrogram
         x = mix_style(x) if mix_style is not None else x
         x = spec_aug(x) if spec_aug is not None else x
         if mix_up is not None:
             x, y, y_soft = mix_up(x, y, y_soft)
+        
+        x = filt_aug(x) if filt_aug is not None else x
+        x = noise_aug(x) if noise_aug is not None else x
+        x = freq_mask_aug(x) if freq_mask_aug is not None else x
+        x = time_mask_aug(x) if time_mask_aug is not None else x
+        x = frame_shift_aug(x) if frame_shift_aug is not None else x
+
+        x = self.apply_device_filter(x, labels['device'])
+        
         # Get the predicted labels
         y_hat = self(x)
         # Temperature adjusted probabilities of teacher and student
