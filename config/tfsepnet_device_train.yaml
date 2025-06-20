@@ -13,7 +13,7 @@ trainer:
         logging_interval: epoch
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        save_top_k: 1
+        save_top_k: 3
         monitor: val_acc
         mode: max
         filename: '{epoch}-{val_acc:.4f}'
@@ -42,7 +42,6 @@ model:
         init_args:
           alpha: 0.4
           p: 0.8
-      spec_aug: null
       # spec_aug:
       #   class_path: util.SpecAugmentation
       #   init_args:
@@ -80,7 +79,7 @@ model:
     spec_extractor:
       class_path: util.CpMel
       init_args:
-        n_mels: 512
+        n_mels: 128
     device_list: ["a", "b", "c", "s1", "s2", "s3", "s4", "s5", "s6", "unknown"]
     device_unknown_prob: 0.1  
 data:
@@ -94,7 +93,6 @@ data:
     pin_memory: true
     sampling_rate: 32000
     train_subset: split25
-    test_subset: test
 
 optimizer:
   class_path: torch.optim.Adam

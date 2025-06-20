@@ -48,8 +48,9 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         self.spec_extractor = spec_extractor
         self.device_list = device_list
         if device_list is not None:
-            self.device_filter = DeviceFilter(device_list, input_channels = 1)
+            self.device_filter = DeviceFilter(device_list, input_channels = self.spec_extractor.n_mels)
             print(f"Device filter is applied with device list: {device_list}")
+            print(f"n_mels: {self.spec_extractor.n_mels}")
         else:
             self.device_filter = None
             print("Device filter is not applied, no device list is provided.")
@@ -130,17 +131,17 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         else:
             train_loss = F.cross_entropy(y_hat, y)
             train_acc, _ = self.accuracy(y_hat, y)
-        if batch_idx == 0:
-            all_devices = self.device_filter.device_to_idx.keys() 
-            device_ids_tensor = torch.tensor(
-                [self.device_filter.device_to_idx[d] for d in all_devices],
-                device=x.device
-            )
-            with torch.no_grad():
-                embeddings = self.device_filter.embedding(device_ids_tensor)
-                attn_values = self.device_filter.attention(embeddings)  # shape: (D, C)
-                for i, dev in enumerate(all_devices):
-                    self.logger.experiment.add_histogram(f'attn/{dev}', attn_values[i], global_step=self.global_step)
+        # if batch_idx == 0:
+        #     all_devices = self.device_filter.device_to_idx.keys() 
+        #     device_ids_tensor = torch.tensor(
+        #         [self.device_filter.device_to_idx[d] for d in all_devices],
+        #         device=x.device
+        #     )
+        #     with torch.no_grad():
+        #         embeddings = self.device_filter.embedding(device_ids_tensor)
+        #         attn_values = self.device_filter.attention(embeddings)  # shape: (D, C)
+        #         for i, dev in enumerate(all_devices):
+        #             self.logger.experiment.add_histogram(f'attn/{dev}', attn_values[i], global_step=self.global_step)
 
         # Log for each epoch
         self.log_dict({'train_loss': train_loss, 'train_acc': train_acc}, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -172,9 +173,14 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
         y = labels[self.class_label]
         d = labels[self.domain_label]
         x = self.spec_extractor(x).unsqueeze(1) if self.spec_extractor is not None else x.unsqueeze(1)
-        x = self.apply_device_filter(x, labels['device'])
-        # x = self.apply_device_filter(x, None) 
-        
+#        
+        device_info = labels['device'] # device specific information
+        # device_info = None # general device information
+        mask_device = torch.tensor([6, 7, 8], device = 'cuda:0')
+        mask = torch.isin(device_info, mask_device)
+        device_info[mask] = 9
+        x = self.apply_device_filter(x, device_info)
+# 
         # Get the input size of feature for measuring model profile
         self._test_input_size = (1, 1, x.size(-2), x.size(-1))
         y_hat = self(x)
@@ -224,28 +230,28 @@ class LitAcousticSceneClassificationSystem(L.LightningModule):
 
         # print("\nDevice='unknown' (general)")
 
-        self.eval()
-        all_y, all_pred, all_loss, all_device = [], [], [], []
-        dataloader = self.trainer.datamodule.val_dataloader()
-        for batch in dataloader:
-            x = batch[0].to(self.device)
-            labels = {'scene': batch[1].to(self.device),
-                      'device': batch[2].to(self.device),
-                      'city': batch[3].to(self.device)}
-            y = labels[self.class_label]
+        # self.eval()
+        # all_y, all_pred, all_loss, all_device = [], [], [], []
+        # dataloader = self.trainer.datamodule.val_dataloader()
+        # for batch in dataloader:
+        #     x = batch[0].to(self.device)
+        #     labels = {'scene': batch[1].to(self.device),
+        #               'device': batch[2].to(self.device),
+        #               'city': batch[3].to(self.device)}
+        #     y = labels[self.class_label]
 
-            x = self.spec_extractor(x).unsqueeze(1)
-            x = self.apply_device_filter(x, [self.device_filter.default_device_idx] * x.size(0))
-            y_hat = self(x)
-            loss = F.cross_entropy(y_hat, y, reduction='none')
-            pred = torch.argmax(y_hat, dim=1)
+        #     x = self.spec_extractor(x).unsqueeze(1)
+        #     x = self.apply_device_filter(x, [self.device_filter.default_device_idx] * x.size(0))
+        #     y_hat = self(x)
+        #     loss = F.cross_entropy(y_hat, y, reduction='none')
+        #     pred = torch.argmax(y_hat, dim=1)
 
-            all_y += y.cpu().tolist()
-            all_pred += pred.cpu().tolist()
-            all_loss += loss.cpu().tolist()
-            all_device += labels[self.domain_label].cpu().tolist()
+        #     all_y += y.cpu().tolist()
+        #     all_pred += pred.cpu().tolist()
+        #     all_loss += loss.cpu().tolist()
+        #     all_device += labels[self.domain_label].cpu().tolist()
 
-        self._log_per_device_and_class(np.array(all_y), np.array(all_pred), np.array(all_loss), np.array(all_device), prefix='val_unknown')
+        # self._log_per_device_and_class(np.array(all_y), np.array(all_pred), np.array(all_loss), np.array(all_device), prefix='val_unknown')
         self._val_outputs = {'y': [], 'pred': [], 'loss': [], 'device': []}
 
 

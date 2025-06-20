@@ -190,7 +190,7 @@ class TimeFreqSepConvolutions(nn.Module):
 class DeviceFilter(nn.Module):
     def __init__(self, device_list = ["a", "b", "c", "s1", "s2", "s3", "s4", "s5", "s6"], 
                        embed_dim = 64,
-                       input_channels = 1,
+                       input_channels = 128,
                        default_device = "unknown"):
         super(DeviceFilter, self).__init__()
         self.device_to_idx = {name: i for i, name in enumerate(device_list)}
@@ -206,23 +206,21 @@ class DeviceFilter(nn.Module):
         )
 
     def forward(self, x, device_name=None):
-        B, C, T, F = x.shape
+        B, C, F, T = x.shape
 
         if device_name is None:
             device_idx = torch.full((B,), self.default_device_idx, dtype=torch.long, device=x.device)
         else:
-            # print(f"Device names: {device_name}")
             # device_idx = [self.device_to_idx.get(name, self.default_device_idx) for name in device_name]
-            # print(f"Device indices: {device_idx}")
-            # device_idx = [self.device_to_idx.get(device_name, self.default_device_idx)]
+            # print(f"Device names: {device_name}")
             device_idx = torch.tensor(device_name, dtype=torch.long, device=x.device)
-            # print(f"Device indices: {device_idx}")
 
         # (B, embed_dim)
         embed_vec = self.embedding(device_idx)
-
-        # (B, C) → attention weights per channel
-        attn_weights = self.attention(embed_vec)  # (B, C)
-        attn_weights = attn_weights.view(B, C, 1, 1)  # reshape
-
+#
+        # (B, F) → attention weights per channel
+        attn_weights = self.attention(embed_vec)  # (B, F)
+        # attn_weights = attn_weights.view(B, C, 1, 1)  # reshape
+        attn_weights = attn_weights.view(B, 1, F, 1)  # reshape
+#
         return x * attn_weights
